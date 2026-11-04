@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ \"${HERDR_ENV:-}\" != \"1\" ] && [ -z \"${HC_TERMINAL_SOCKET:-}\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
+            "command": "[ -z \"${HC_TERMINAL_SOCKET:-}\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
             "timeout": 5
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ \"${HERDR_ENV:-}\" != \"1\" ] && [ -z \"${HC_TERMINAL_SOCKET:-}\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
+            "command": "[ -z \"${HC_TERMINAL_SOCKET:-}\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
             "timeout": 5
           }
         ]
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ \"${HERDR_ENV:-}\" != \"1\" ] && [ -z \"${HC_TERMINAL_SOCKET:-}\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
+            "command": "[ -z \"${HC_TERMINAL_SOCKET:-}\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
             "timeout": 5
           }
         ],
@@ -39,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ \"${HERDR_ENV:-}\" != \"1\" ] && [ -z \"${HC_TERMINAL_SOCKET:-}\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
+            "command": "[ -z \"${HC_TERMINAL_SOCKET:-}\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
             "timeout": 5
           }
         ],
@@ -51,7 +51,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ \"${HERDR_ENV:-}\" != \"1\" ] && [ -z \"${HC_TERMINAL_SOCKET:-}\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
+            "command": "[ -z \"${HC_TERMINAL_SOCKET:-}\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
             "timeout": 5
           }
         ],
@@ -63,7 +63,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ \"${HERDR_ENV:-}\" != \"1\" ] && [ -z \"${HC_TERMINAL_SOCKET:-}\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
+            "command": "[ -z \"${HC_TERMINAL_SOCKET:-}\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
             "timeout": 5
           }
         ]
@@ -74,7 +74,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ \"${HERDR_ENV:-}\" != \"1\" ] && [ -z \"${HC_TERMINAL_SOCKET:-}\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
+            "command": "[ -z \"${HC_TERMINAL_SOCKET:-}\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
             "timeout": 5
           }
         ]
@@ -85,7 +85,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ \"${HERDR_ENV:-}\" != \"1\" ] && [ -z \"${HC_TERMINAL_SOCKET:-}\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
+            "command": "[ -z \"${HC_TERMINAL_SOCKET:-}\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
             "timeout": 5
           }
         ]
@@ -96,7 +96,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ \"${HERDR_ENV:-}\" != \"1\" ] && [ -z \"${HC_TERMINAL_SOCKET:-}\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
+            "command": "[ -z \"${HC_TERMINAL_SOCKET:-}\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
             "timeout": 5
           }
         ]
@@ -107,7 +107,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ \"${HERDR_ENV:-}\" != \"1\" ] && [ -z \"${HC_TERMINAL_SOCKET:-}\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
+            "command": "[ -z \"${HC_TERMINAL_SOCKET:-}\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
             "timeout": 5
           }
         ]
@@ -118,7 +118,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ \"${HERDR_ENV:-}\" != \"1\" ] && [ -z \"${HC_TERMINAL_SOCKET:-}\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
+            "command": "[ -z \"${HC_TERMINAL_SOCKET:-}\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
             "timeout": 5
           }
         ]
@@ -129,7 +129,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ \"${HERDR_ENV:-}\" != \"1\" ] && [ -z \"${HC_TERMINAL_SOCKET:-}\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
+            "command": "[ -z \"${HC_TERMINAL_SOCKET:-}\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
             "timeout": 5
           }
         ]
@@ -140,7 +140,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ \"${HERDR_ENV:-}\" != \"1\" ] && [ -z \"${HC_TERMINAL_SOCKET:-}\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
+            "command": "[ -z \"${HC_TERMINAL_SOCKET:-}\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
             "timeout": 5
           }
         ]
