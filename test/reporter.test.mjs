@@ -161,3 +161,19 @@ test("--doctor prints diagnostics JSON", async () => {
   assert.equal(info.insideHerdrApp, true);
   assert.equal(info.hcTerminalId, "t1");
 });
+
+test("regression: permission blocked is cleared by the next tool's PreToolUse", async () => {
+  // PermissionRequest -> blocked; user approves; the tool starts -> PreToolUse
+  // (a normal tool, not AskUserQuestion) must report working, not stay blocked.
+  const a = await run({ hook_event_name: "PermissionRequest", tool_name: "Bash", message: "Allow rm?" });
+  assert.equal(parseOsc(a.out).state, "blocked");
+  const b = await run({ hook_event_name: "PreToolUse", tool_name: "Bash" });
+  assert.equal(parseOsc(b.out).state, "working");
+});
+
+test("regression: AskUserQuestion blocked is cleared by its PostToolUse", async () => {
+  const a = await run({ hook_event_name: "PreToolUse", tool_name: "AskUserQuestion" });
+  assert.equal(parseOsc(a.out).state, "blocked");
+  const b = await run({ hook_event_name: "PostToolUse", tool_name: "AskUserQuestion" });
+  assert.equal(parseOsc(b.out).state, "working");
+});

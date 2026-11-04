@@ -229,8 +229,10 @@ function classify(hook) {
             return { kind: "report", state: "working", ...(prompt ? { title: prompt } : {}) };
         }
         case "PreToolUse":
-            // hooks.json only matches ^AskUserQuestion$ for this event; the
-            // tool_name check keeps the reporter correct if invoked generically.
+            // Fires for every tool (no matcher). AskUserQuestion means we are waiting
+            // on the user; any other tool means a permission was granted and the turn
+            // is running again — this is what clears a stale "blocked" after the user
+            // answers a permission dialog. Mirrors kimi's two PreToolUse branches.
             if (tool === "AskUserQuestion") {
                 return { kind: "report", state: "blocked", blockKind: "question", message: "asking the user a question" };
             }
