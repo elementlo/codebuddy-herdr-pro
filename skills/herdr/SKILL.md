@@ -18,15 +18,21 @@ Herdr 窗格内的每个进程都继承这些环境变量：
 | HERDR_BIN_PATH | 管理该窗格的 Herdr 可执行文件 |
 | HERDR_SOCKET_PATH | Herdr 本地 API socket（Unix socket） |
 
-插件 hook 脚本（bin/herdr-report.js，源码 src/herdr-report.ts）通过 socket API（pane.report_agent / pane.release_agent）上报三类信息，socket 不可达时回退 CLI：
+插件 hook 脚本（bin/herdr-report.js，源码 src/herdr-report.ts）优先通过 socket API 上报，socket 不可达时回退 CLI。协议分层与 Herdr 官方 claude/kimi 一方集成一致：
 
-1. **状态**：UserPromptSubmit/PreToolUse/PostToolUse/PostToolUseFailure/PermissionDenied → working；Stop/idle_prompt → idle；PermissionRequest/StopFailure/权限类 Notification → blocked。相同状态去重，5 分钟心跳强制刷新。
-2. **恢复命令**：SessionStart 存储 "codebuddy --resume SESSION_ID"，Herdr 服务器重启后在同一窗格恢复会话。
-3. **释放**：SessionEnd 清除窗格上的 agent。
+1. **会话身份** → `pane.report_agent_session`：SessionStart 时上报 agent_session_id、agent_session_path、session_start_source（白名单 startup/resume/clear/compact/branch/new/fork/select）和 resume 命令 "codebuddy --resume SESSION_ID"。仅会话变化时发送。
+2. **生命周期状态** → `pane.report_agent`：idle/working/blocked，同时携带 agent_session_id。相同状态去重，5 分钟心跳强制刷新。
+3. **展示元数据** → `pane.report_metadata`：UserPromptSubmit 把 prompt 设为侧边栏标题（带 TTL）。只改展示，不夺状态权威。
+4. **释放** → `pane.release_agent`：SessionEnd 清除窗格上的 agent。
 
-集成 source 是 "codebuddy-pro"；不得使用保留的 "herdr:" 前缀。
+事件→状态映射（对齐官方 KIMI_HOOK_EVENTS）：
+- working：UserPromptSubmit、SubagentStart、PreCompact、PermissionDenied、AskUserQuestion 的 PostToolUse/PostToolUseFailure
+- blocked：PermissionRequest、StopFailure、权限类 Notification、AskUserQuestion 的 PreToolUse
+- idle：Stop、idle_prompt 类 Notification、SessionStart
 
-每窗格状态持久化在 $TMPDIR/herdr-codebuddy-pro-<pane>.json（seq/状态/会话ID/sentAt），seq 跨进程严格递增。
+集成 source 是 "codebuddy-pro"；不得使用保留的 "herdr:" 前缀（那是 Herdr 官方集成专用）。
+
+每窗格状态持久化在 $TMPDIR/herdr-codebuddy-pro-<pane>.json（seq/状态/会话ID/sentAt），seq 用纳秒时间戳并跨进程严格递增（Herdr 忽略 seq 不大于上次已接受值的上报）。
 
 ## 调试
 
@@ -38,7 +44,7 @@ Herdr 窗格内的每个进程都继承这些环境变量：
 3. 运行 "herdr agent list" 和 "herdr pane get $HERDR_PANE_ID"。
 4. 查看状态文件 $TMPDIR/herdr-codebuddy-pro-*（seq 是否递增、state 是否正确）。
 5. 手动触发一次上报验证链路：
-   echo '{"hook_event_name":"PreToolUse","session_id":"test"}' | node "$CODEBUDDY_PLUGIN_ROOT/bin/herdr-report.js"
+   echo '{"hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","session_id":"test"}' | node "$CODEBUDDY_PLUGIN_ROOT/bin/herdr-report.js"
    herdr pane get "$HERDR_PANE_ID"
 
 除非用户明确要求手动覆盖，不要在模型动作中直接调用 "herdr pane report-agent"——hooks 已保持 Herdr 同步。

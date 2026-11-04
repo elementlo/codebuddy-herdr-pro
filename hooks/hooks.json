@@ -30,7 +30,8 @@
             "command": "[ \"${HERDR_ENV:-}\" != \"1\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
             "timeout": 5
           }
-        ]
+        ],
+        "matcher": "^AskUserQuestion$"
       }
     ],
     "PostToolUse": [
@@ -41,10 +42,34 @@
             "command": "[ \"${HERDR_ENV:-}\" != \"1\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
             "timeout": 5
           }
-        ]
+        ],
+        "matcher": "^AskUserQuestion$"
       }
     ],
     "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${HERDR_ENV:-}\" != \"1\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
+            "timeout": 5
+          }
+        ],
+        "matcher": "^AskUserQuestion$"
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ \"${HERDR_ENV:-}\" != \"1\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
       {
         "hooks": [
           {

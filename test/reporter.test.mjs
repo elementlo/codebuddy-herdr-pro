@@ -8,9 +8,14 @@ import { join } from "node:path";
 
 const REPORTER = join(import.meta.dirname, "..", "bin", "herdr-report.js");
 
-/** Fake Herdr server: collects newline-delimited JSON requests, replies "ok". */
+/**
+ * Fake Herdr server. Collects each request twice: the JSON.parse'd object
+ * (convenient for field assertions) and the raw line (so seq — a nanosecond
+ * timestamp beyond Number.MAX_SAFE_INTEGER — can be compared exactly as text).
+ */
 function startFakeHerdr() {
   const requests = [];
+  const rawSeqs = [];
   const server = net.createServer((conn) => {
     let buf = "";
     conn.on("data", (chunk) => {
@@ -19,22 +24,18 @@ function startFakeHerdr() {
       while ((idx = buf.indexOf("\n")) >= 0) {
         const line = buf.slice(0, idx).trim();
         buf = buf.slice(idx + 1);
-        if (line) {
-          try { requests.push(JSON.parse(line)); } catch { requests.push({ raw: line }); }
-        }
+        if (!line) continue;
+        const m = line.match(/"seq":(\d+)/);
+        rawSeqs.push(m ? m[1] : null);
+        try { requests.push(JSON.parse(line)); } catch { requests.push({ raw: line }); }
       }
     });
     conn.on("end", () => { conn.end('{\"ok\":true}\n'); });
   });
   return new Promise((resolve) => {
-    server.listen(0, "127.0.0.1", () => {
-      // Reporter uses a unix socket path; listen on a temp unix socket instead.
-      server.close(() => {
-        const dir = mkdtempSync(join(tmpdir(), "herdr-test-"));
-        const sockPath = join(dir, "herdr.sock");
-        server.listen(sockPath, () => resolve({ server, requests, sockPath, dir }));
-      });
-    });
+    const dir = mkdtempSync(join(tmpdir(), "herdr-test-"));
+    const sockPath = join(dir, "herdr.sock");
+    server.listen(sockPath, () => resolve({ server, requests, rawSeqs, sockPath, dir }));
   });
 }
 
@@ -62,6 +63,14 @@ function baseEnv(fake, tmp, pane = "w1:p1") {
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** Send SessionStart to establish identity, then clear captured requests. */
+async function establishSession(env, fake, sid = "s1") {
+  await runReporter(env, { hook_event_name: "SessionStart", session_id: sid, source: "startup" });
+  await wait(120);
+  fake.requests.length = 0;
+  fake.rawSeqs.length = 0;
+}
+
 test("no-op outside Herdr", async (t) => {
   const fake = await startFakeHerdr();
   t.after(() => { fake.server.close(); rmSync(fake.dir, { recursive: true, force: true }); });
@@ -70,7 +79,7 @@ test("no-op outside Herdr", async (t) => {
   assert.equal(fake.requests.length, 0);
 });
 
-test("SessionStart reports idle with resume command", async (t) => {
+test("SessionStart: report_agent_session (identity+resume) then report_agent (idle)", async (t) => {
   const fake = await startFakeHerdr();
   const tmp = mkdtempSync(join(tmpdir(), "herdr-state-"));
   t.after(() => { fake.server.close(); rmSync(fake.dir, { recursive: true, force: true }); rmSync(tmp, { recursive: true, force: true }); });
@@ -78,18 +87,61 @@ test("SessionStart reports idle with resume command", async (t) => {
     hook_event_name: "SessionStart",
     session_id: "sess-abc",
     transcript_path: "/tmp/t.jsonl",
+    source: "startup",
   });
+  await wait(150);
+  assert.equal(fake.requests.length, 2);
+  const [sess, state] = fake.requests;
+  assert.equal(sess.method, "pane.report_agent_session");
+  assert.equal(sess.params.agent_session_id, "sess-abc");
+  assert.equal(sess.params.agent_session_path, "/tmp/t.jsonl");
+  assert.equal(sess.params.session_start_source, "startup");
+  assert.deepEqual(sess.params.resume_argv, ["codebuddy", "--resume", "sess-abc"]);
+  assert.equal(sess.params.source, "codebuddy-pro");
+  assert.equal(state.method, "pane.report_agent");
+  assert.equal(state.params.state, "idle");
+  assert.equal(state.params.agent_session_id, "sess-abc");
+  // seq compared as exact text (nanosecond values exceed Number precision).
+  assert.ok(BigInt(fake.rawSeqs[1]) > BigInt(fake.rawSeqs[0]), "state seq must exceed session seq");
+});
+
+test("unknown session_start_source is dropped (Herdr whitelist)", async (t) => {
+  const fake = await startFakeHerdr();
+  const tmp = mkdtempSync(join(tmpdir(), "herdr-state-"));
+  t.after(() => { fake.server.close(); rmSync(fake.dir, { recursive: true, force: true }); rmSync(tmp, { recursive: true, force: true }); });
+  await runReporter(baseEnv(fake, tmp), { hook_event_name: "SessionStart", session_id: "s1", source: "weird" });
   await wait(100);
-  assert.equal(fake.requests.length, 1);
-  const req = fake.requests[0];
-  assert.equal(req.method, "pane.report_agent");
-  assert.equal(req.params.state, "idle");
-  assert.equal(req.params.source, "codebuddy-pro");
-  assert.equal(req.params.agent, "CodeBuddy");
-  assert.equal(req.params.agent_session_id, "sess-abc");
-  assert.deepEqual(req.params.resume_argv, ["codebuddy", "--resume", "sess-abc"]);
-  assert.equal(req.params.agent_session_path, "/tmp/t.jsonl");
-  assert.equal(typeof req.params.seq, "number");
+  assert.equal(fake.requests[0].params.session_start_source, undefined);
+});
+
+test("UserPromptSubmit: working + report_metadata title", async (t) => {
+  const fake = await startFakeHerdr();
+  const tmp = mkdtempSync(join(tmpdir(), "herdr-state-"));
+  t.after(() => { fake.server.close(); rmSync(fake.dir, { recursive: true, force: true }); rmSync(tmp, { recursive: true, force: true }); });
+  const env = baseEnv(fake, tmp);
+  await establishSession(env, fake);
+  await runReporter(env, { hook_event_name: "UserPromptSubmit", session_id: "s1", prompt: "Fix the login bug" });
+  await wait(150);
+  const methods = fake.requests.map((r) => r.method);
+  assert.deepEqual(methods, ["pane.report_agent", "pane.report_metadata"]);
+  assert.equal(fake.requests[0].params.state, "working");
+  assert.equal(fake.requests[1].params.title, "Fix the login bug");
+  assert.equal(fake.requests[1].params.ttl_ms, 3600000);
+});
+
+test("AskUserQuestion PreToolUse -> blocked; PostToolUse -> working", async (t) => {
+  const fake = await startFakeHerdr();
+  const tmp = mkdtempSync(join(tmpdir(), "herdr-state-"));
+  t.after(() => { fake.server.close(); rmSync(fake.dir, { recursive: true, force: true }); rmSync(tmp, { recursive: true, force: true }); });
+  const env = baseEnv(fake, tmp);
+  await establishSession(env, fake);
+  await runReporter(env, { hook_event_name: "UserPromptSubmit", session_id: "s1" });
+  await runReporter(env, { hook_event_name: "PreToolUse", tool_name: "AskUserQuestion", session_id: "s1" });
+  await runReporter(env, { hook_event_name: "PostToolUse", tool_name: "AskUserQuestion", session_id: "s1" });
+  await wait(200);
+  const states = fake.requests.map((r) => r.params.state);
+  assert.deepEqual(states, ["working", "blocked", "working"]);
+  assert.equal(fake.requests[1].params.message, "asking the user a question");
 });
 
 test("state dedup: repeated working events send once", async (t) => {
@@ -97,18 +149,17 @@ test("state dedup: repeated working events send once", async (t) => {
   const tmp = mkdtempSync(join(tmpdir(), "herdr-state-"));
   t.after(() => { fake.server.close(); rmSync(fake.dir, { recursive: true, force: true }); rmSync(tmp, { recursive: true, force: true }); });
   const env = baseEnv(fake, tmp);
-  await runReporter(env, { hook_event_name: "SessionStart", session_id: "s1" });
+  await establishSession(env, fake);
   await runReporter(env, { hook_event_name: "UserPromptSubmit", session_id: "s1" });
-  await runReporter(env, { hook_event_name: "PreToolUse", session_id: "s1" });
-  await runReporter(env, { hook_event_name: "PostToolUse", session_id: "s1" });
-  await runReporter(env, { hook_event_name: "PreToolUse", session_id: "s1" });
-  await wait(150);
-  // SessionStart(idle) + first working; the other three are deduped.
-  assert.equal(fake.requests.length, 2);
-  assert.equal(fake.requests[1].params.state, "working");
+  await runReporter(env, { hook_event_name: "SubagentStart", session_id: "s1" });
+  await runReporter(env, { hook_event_name: "PreCompact", session_id: "s1" });
+  await runReporter(env, { hook_event_name: "PermissionDenied", session_id: "s1" });
+  await wait(200);
+  assert.equal(fake.requests.length, 1);
+  assert.equal(fake.requests[0].params.state, "working");
 });
 
-test("seq strictly increases across processes", async (t) => {
+test("seq strictly increases across processes and requests", async (t) => {
   const fake = await startFakeHerdr();
   const tmp = mkdtempSync(join(tmpdir(), "herdr-state-"));
   t.after(() => { fake.server.close(); rmSync(fake.dir, { recursive: true, force: true }); rmSync(tmp, { recursive: true, force: true }); });
@@ -116,10 +167,10 @@ test("seq strictly increases across processes", async (t) => {
   await runReporter(env, { hook_event_name: "SessionStart", session_id: "s1" });
   await runReporter(env, { hook_event_name: "UserPromptSubmit", session_id: "s1" });
   await runReporter(env, { hook_event_name: "Stop", session_id: "s1" });
-  await wait(150);
-  const seqs = fake.requests.map((r) => r.params.seq);
-  assert.equal(seqs.length, 3);
-  for (let i = 1; i < seqs.length; i++) assert.ok(seqs[i] > seqs[i - 1], `seq not increasing: ${seqs}`);
+  await wait(200);
+  const seqs = fake.rawSeqs.map((s) => BigInt(s));
+  assert.ok(seqs.length >= 3);
+  for (let i = 1; i < seqs.length; i++) assert.ok(seqs[i] > seqs[i - 1], `seq not increasing at ${i}: ${fake.rawSeqs}`);
 });
 
 test("Notification permission -> blocked with message; idle_prompt -> idle", async (t) => {
@@ -127,6 +178,7 @@ test("Notification permission -> blocked with message; idle_prompt -> idle", asy
   const tmp = mkdtempSync(join(tmpdir(), "herdr-state-"));
   t.after(() => { fake.server.close(); rmSync(fake.dir, { recursive: true, force: true }); rmSync(tmp, { recursive: true, force: true }); });
   const env = baseEnv(fake, tmp);
+  await establishSession(env, fake);
   await runReporter(env, { hook_event_name: "Notification", notification_type: "permission_prompt", message: "Allow Bash?", session_id: "s1" });
   await runReporter(env, { hook_event_name: "Notification", notification_type: "idle_prompt", session_id: "s1" });
   await wait(150);
@@ -140,7 +192,9 @@ test("StopFailure -> blocked", async (t) => {
   const fake = await startFakeHerdr();
   const tmp = mkdtempSync(join(tmpdir(), "herdr-state-"));
   t.after(() => { fake.server.close(); rmSync(fake.dir, { recursive: true, force: true }); rmSync(tmp, { recursive: true, force: true }); });
-  await runReporter(baseEnv(fake, tmp), { hook_event_name: "StopFailure", reason: "api_error", session_id: "s1" });
+  const env = baseEnv(fake, tmp);
+  await establishSession(env, fake);
+  await runReporter(env, { hook_event_name: "StopFailure", reason: "api_error", session_id: "s1" });
   await wait(100);
   assert.equal(fake.requests.length, 1);
   assert.equal(fake.requests[0].params.state, "blocked");
@@ -152,24 +206,55 @@ test("SessionEnd releases the pane", async (t) => {
   const tmp = mkdtempSync(join(tmpdir(), "herdr-state-"));
   t.after(() => { fake.server.close(); rmSync(fake.dir, { recursive: true, force: true }); rmSync(tmp, { recursive: true, force: true }); });
   const env = baseEnv(fake, tmp);
-  await runReporter(env, { hook_event_name: "SessionStart", session_id: "s1" });
+  await establishSession(env, fake);
   await runReporter(env, { hook_event_name: "SessionEnd", session_id: "s1" });
-  await wait(150);
-  assert.equal(fake.requests.length, 2);
-  assert.equal(fake.requests[1].method, "pane.release_agent");
-  assert.equal(fake.requests[1].params.source, "codebuddy-pro");
+  await wait(120);
+  const last = fake.requests[fake.requests.length - 1];
+  assert.equal(last.method, "pane.release_agent");
+  assert.equal(last.params.source, "codebuddy-pro");
 });
 
-test("resume command survives later events without session_id", async (t) => {
+test("remembered session id rides on later state reports", async (t) => {
   const fake = await startFakeHerdr();
   const tmp = mkdtempSync(join(tmpdir(), "herdr-state-"));
   t.after(() => { fake.server.close(); rmSync(fake.dir, { recursive: true, force: true }); rmSync(tmp, { recursive: true, force: true }); });
   const env = baseEnv(fake, tmp);
-  await runReporter(env, { hook_event_name: "SessionStart", session_id: "s9" });
+  await establishSession(env, fake, "s9");
   await runReporter(env, { hook_event_name: "UserPromptSubmit" });
+  await wait(120);
+  const working = fake.requests.find((r) => r.params.state === "working");
+  assert.equal(working.params.agent_session_id, "s9");
+});
+
+test("session switch re-reports identity with new resume command", async (t) => {
+  const fake = await startFakeHerdr();
+  const tmp = mkdtempSync(join(tmpdir(), "herdr-state-"));
+  t.after(() => { fake.server.close(); rmSync(fake.dir, { recursive: true, force: true }); rmSync(tmp, { recursive: true, force: true }); });
+  const env = baseEnv(fake, tmp);
+  await establishSession(env, fake, "s1");
+  await runReporter(env, { hook_event_name: "SessionStart", session_id: "s2", source: "clear" });
   await wait(150);
-  assert.equal(fake.requests[1].params.agent_session_id, "s9");
-  assert.deepEqual(fake.requests[1].params.resume_argv, ["codebuddy", "--resume", "s9"]);
+  const sessReports = fake.requests.filter((r) => r.method === "pane.report_agent_session");
+  assert.equal(sessReports.length, 1);
+  assert.deepEqual(sessReports[0].params.resume_argv, ["codebuddy", "--resume", "s2"]);
+  assert.equal(sessReports[0].params.session_start_source, "clear");
+});
+
+test("metadata-only update still advances persisted seq (no regression)", async (t) => {
+  const fake = await startFakeHerdr();
+  const tmp = mkdtempSync(join(tmpdir(), "herdr-state-"));
+  t.after(() => { fake.server.close(); rmSync(fake.dir, { recursive: true, force: true }); rmSync(tmp, { recursive: true, force: true }); });
+  const env = baseEnv(fake, tmp);
+  await establishSession(env, fake);
+  // working with a title, then a second prompt while still working: state is
+  // deduped but the title metadata must carry a strictly greater seq.
+  await runReporter(env, { hook_event_name: "UserPromptSubmit", session_id: "s1", prompt: "first" });
+  await runReporter(env, { hook_event_name: "UserPromptSubmit", session_id: "s1", prompt: "second" });
+  await wait(180);
+  const metaIdx = fake.requests.map((r) => r.method).lastIndexOf("pane.report_metadata");
+  const seqs = fake.rawSeqs.map((s) => BigInt(s));
+  for (let i = 1; i < seqs.length; i++) assert.ok(seqs[i] > seqs[i - 1], `seq regression at ${i}`);
+  assert.ok(metaIdx >= 1);
 });
 
 test("socket failure falls back silently (no crash, exit 0)", async (t) => {
