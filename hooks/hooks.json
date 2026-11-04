@@ -101,6 +101,28 @@
         ]
       }
     ],
+    "Elicitation": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -z \"${HC_TERMINAL_SOCKET:-}\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "ElicitationResult": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "[ -z \"${HC_TERMINAL_SOCKET:-}\" ] || node \"${CODEBUDDY_PLUGIN_ROOT}/bin/herdr-report.js\" || true",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "Notification": [
       {
         "hooks": [

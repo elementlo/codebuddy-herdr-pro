@@ -1,6 +1,6 @@
 {
   "name": "codebuddy-herdr-pro",
-  "version": "1.3.1",
+  "version": "1.3.2",
   "description": "让 CodeBuddy 成为 Herdr 桌面 App（herdr-app + herdr-core）的一等公民。通过 CodeBuddy hooks 把运行状态编码为 OSC 7501 程序状态序列写入终端 pty，使 Herdr App 的 agents 列表显示准确的 idle/working/blocked 状态、阻塞原因(kind)、侧边栏标题，并支持 hc wait 自动化。事件映射对齐官方 kimi 集成；matcher 精确接线(AskUserQuestion→blocked)；无状态轻量设计；--doctor 诊断。仅支持 Herdr App，不支持 herdr TUI。",
   "author": "elementlo"
 }

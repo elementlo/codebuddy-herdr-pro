@@ -26,8 +26,8 @@ herdr-core **没有** report_agent 这类 RPC。按官方 AGENTS.md，agent 状�
 3. `emitOsc()` 向上遍历进程链找到**最外层 pty**（CodeBuddy hook 跑在嵌套 pty，写 /dev/tty 到不了 herdr-core），把序列写进去。
 
 事件→状态：
-- working：UserPromptSubmit、SubagentStart、PreCompact、PermissionDenied、AskUserQuestion 的 PostToolUse/PostToolUseFailure
-- blocked：PermissionRequest(kind=permission)、AskUserQuestion 的 PreToolUse(kind=question)、StopFailure、权限类 Notification
+- working：UserPromptSubmit、SubagentStart、PreCompact、PermissionDenied、ElicitationResult、其他工具的 PreToolUse（清除权限 blocked）、AskUserQuestion 的 PostToolUse/PostToolUseFailure
+- blocked：PermissionRequest(kind=permission)、AskUserQuestion 的 PreToolUse(kind=question)、Elicitation(MCP 请求输入,kind=question)、StopFailure、权限类 Notification
 - idle：SessionStart、Stop、idle_prompt 类 Notification
 - clear：SessionEnd
 

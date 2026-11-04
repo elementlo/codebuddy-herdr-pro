@@ -293,6 +293,20 @@ function classify(hook: HookPayload): Decision {
         message: sanitizeText(asString(hook.message) || "permission: " + (tool || "tool"), MAX_MESSAGE_LEN),
       };
 
+    case "Elicitation":
+      // An MCP server is asking the user for input mid-tool-call. Must be
+      // paired with ElicitationResult below, or "needs you" sticks forever.
+      return {
+        kind: "report",
+        state: "blocked",
+        blockKind: "question",
+        message: sanitizeText(asString(hook.message), MAX_MESSAGE_LEN) || "MCP server requests input",
+      };
+
+    case "ElicitationResult":
+      // The user answered the MCP elicitation; the tool call resumes.
+      return { kind: "report", state: "working" };
+
     case "Stop":
       return { kind: "report", state: "idle" };
 
