@@ -1,0 +1,6 @@
+{
+  "name": "codebuddy-herdr-pro",
+  "version": "1.0.0",
+  "description": "让 CodeBuddy 成为 Herdr 的一等公民：通过 Herdr 本地 socket API 上报 idle/working/blocked 状态、可恢复会话命令与退出释放。相比基础集成，提供状态去重、无 flock 依赖的原子序列号、socket 失败自动回退 CLI、更完整的事件覆盖（PermissionRequest/StopFailure 等）以及 --doctor 诊断模式。",
+  "author": "elementlo"
+}

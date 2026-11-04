@@ -1,0 +1,16 @@
+{
+  "name": "codebuddy-herdr-pro",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "High-performance Herdr integration plugin for CodeBuddy Code",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test test/"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.0"
+  }
+}
