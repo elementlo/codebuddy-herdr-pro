@@ -291,3 +291,116 @@ test("--doctor prints diagnostics JSON", async (t) => {
   assert.equal(info.paneId, "w1:p1");
   assert.equal(info.insideHerdr, true);
 });
+
+
+/* ------------------------------------------------------------------ *
+ * herdr-core backend (OSC 7501). Forced to stdout for determinism.
+ * ------------------------------------------------------------------ */
+
+const ESC = "\u001b";
+const ST = ESC + "\\";
+
+function runCore(stdinJson) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [REPORTER], {
+      env: {
+        ...process.env,
+        HERDR_ENV: "",
+        HERDR_PANE_ID: "",
+        HERDR_SOCKET_PATH: "",
+        HERDR_BIN_PATH: "",
+        HC_TERMINAL_SOCKET: "/tmp/fake-hc.sock",
+        HC_TERMINAL_ID: "t1",
+        HERDR_PRO_OSC_TO_STDOUT: "1",
+      },
+    });
+    let out = "";
+    child.stdout.on("data", (c) => (out += c));
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ code, out }));
+    child.stdin.end(JSON.stringify(stdinJson));
+  });
+}
+
+/** Parse an OSC 7501 body into a key->value map. */
+function parseOsc(out) {
+  const m = out.match(new RegExp(ESC.replace(/\\/g, "\\\\") + "\\]7501;([^" + ESC.replace(/\\/g,"\\\\") + "]*)" + ST.replace(/\\/g,"\\\\")));
+  if (!m) return null;
+  const pairs = {};
+  for (const p of m[1].split(":")) {
+    const i = p.indexOf("=");
+    if (i > 0) pairs[p.slice(0, i)] = p.slice(i + 1);
+  }
+  return pairs;
+}
+
+test("core: no-op when neither backend env present", async () => {
+  const { out } = await new Promise((resolve) => {
+    const child = spawn(process.execPath, [REPORTER], {
+      env: { ...process.env, HERDR_ENV: "", HC_TERMINAL_SOCKET: "", PATH: process.env.PATH },
+    });
+    let o = "";
+    child.stdout.on("data", (c) => (o += c));
+    child.on("close", () => resolve({ out: o }));
+    child.stdin.end(JSON.stringify({ hook_event_name: "Stop" }));
+  });
+  assert.equal(out, "");
+});
+
+test("core: UserPromptSubmit emits OSC 7501 working + base64 title", async () => {
+  const { out } = await runCore({ hook_event_name: "UserPromptSubmit", prompt: "Fix login" });
+  const p = parseOsc(out);
+  assert.ok(p, "no OSC 7501 emitted: " + JSON.stringify(out));
+  assert.equal(p.state, "working");
+  assert.equal(p.app, "codebuddy");
+  assert.equal(Buffer.from(p.title, "base64").toString("utf8"), "Fix login");
+});
+
+test("core: PermissionRequest emits blocked with kind=permission and msg", async () => {
+  const { out } = await runCore({ hook_event_name: "PermissionRequest", tool_name: "Bash", message: "Allow rm?" });
+  const p = parseOsc(out);
+  assert.equal(p.state, "blocked");
+  assert.equal(p.kind, "permission");
+  assert.equal(Buffer.from(p.msg, "base64").toString("utf8"), "Allow rm?");
+});
+
+test("core: AskUserQuestion PreToolUse emits blocked kind=question", async () => {
+  const { out } = await runCore({ hook_event_name: "PreToolUse", tool_name: "AskUserQuestion" });
+  const p = parseOsc(out);
+  assert.equal(p.state, "blocked");
+  assert.equal(p.kind, "question");
+});
+
+test("core: Stop emits idle", async () => {
+  const { out } = await runCore({ hook_event_name: "Stop" });
+  assert.equal(parseOsc(out).state, "idle");
+});
+
+test("core: SessionEnd emits clear (no app key)", async () => {
+  const { out } = await runCore({ hook_event_name: "SessionEnd" });
+  const p = parseOsc(out);
+  assert.equal(p.state, "clear");
+  assert.equal(p.app, undefined);
+});
+
+test("core: OSC value charset is sanitized (no ':' or ';' in app)", async () => {
+  const { out } = await runCore({ hook_event_name: "Stop" });
+  // The raw body must contain exactly the pairs we expect, no stray separators.
+  const body = out.slice(out.indexOf("7501;") + 5, out.indexOf(ST));
+  assert.ok(/^[A-Za-z0-9_.,+/=:-]+$/.test(body), "illegal chars in body: " + JSON.stringify(body));
+});
+
+test("core: --doctor reports backend=core and outerTty", async () => {
+  const { out } = await new Promise((resolve) => {
+    const child = spawn(process.execPath, [REPORTER, "--doctor"], {
+      env: { ...process.env, HERDR_ENV: "", HC_TERMINAL_SOCKET: "/tmp/x.sock", HC_TERMINAL_ID: "t1" },
+    });
+    let o = "";
+    child.stdout.on("data", (c) => (o += c));
+    child.on("close", () => resolve({ out: o }));
+    child.stdin.end();
+  });
+  const info = JSON.parse(out);
+  assert.equal(info.backend, "core");
+  assert.equal(info.insideHerdr, true);
+});

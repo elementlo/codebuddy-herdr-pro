@@ -2,18 +2,29 @@
 /**
  * codebuddy-herdr-pro reporter.
  *
- * Reads a CodeBuddy hook payload from stdin and reports to Herdr through its
- * local socket API (HERDR_SOCKET_PATH), falling back to the Herdr CLI
- * (HERDR_BIN_PATH) when the socket is unavailable.
+ * Reads a CodeBuddy hook payload from stdin and reports the agent state to
+ * Herdr. Two Herdr products exist and they report state differently, so the
+ * reporter picks a backend from the environment:
  *
- * Protocol layering follows Herdr's own first-party integrations
- * (src/integration/assets/{claude,kimi}/herdr-agent-state.sh in herdrdev/herdr):
+ *   Backend "tui"  — the herdr terminal multiplexer (herdr.dev).
+ *     Detected by HERDR_ENV=1 + HERDR_PANE_ID. Talks to the local socket API
+ *     (HERDR_SOCKET_PATH), falling back to the herdr CLI (HERDR_BIN_PATH).
+ *     Protocol layering follows Herdr's own first-party integrations
+ *     (src/integration/assets/{claude,kimi}/herdr-agent-state.sh in
+ *     herdrdev/herdr):
+ *       - Session identity  -> pane.report_agent_session
+ *         (agent_session_id, agent_session_path, session_start_source, resume_argv)
+ *       - Lifecycle state   -> pane.report_agent   (idle / working / blocked)
+ *       - Display metadata  -> pane.report_metadata (sidebar title; never state)
+ *       - Exit              -> pane.release_agent
  *
- *   - Session identity  -> pane.report_agent_session
- *     (agent_session_id, agent_session_path, session_start_source, resume_argv)
- *   - Lifecycle state   -> pane.report_agent   (idle / working / blocked)
- *   - Display metadata  -> pane.report_metadata (sidebar title; never state)
- *   - Exit              -> pane.release_agent
+ *   Backend "core" — the Herdr desktop app (herdr-app + herdr-core / hc).
+ *     Detected by HC_TERMINAL_SOCKET. herdr-core has no report_agent RPC; per
+ *     herdr-app defaults/AGENTS.md, "Agents are terminals whose program reports
+ *     a status (OSC 7501)". So state is emitted as an OSC 7501 Program Status
+ *     escape sequence written to the terminal's own pty.
+ *
+ * Outside both, the reporter is a no-op.
  *
  * Design goals, in order:
  *   1. Never break or slow down a CodeBuddy session (every failure is swallowed).
@@ -48,6 +59,18 @@ const STALE_LOCK_MS = 5000;
  * without waiting for the next state transition.
  */
 const HEARTBEAT_MS = 5 * 60 * 1000;
+/**
+ * OSC 7501 "app" key: a stable program name, [A-Za-z0-9_.+-]{1,32}. herdr-app
+ * shows it as the agent's name.
+ */
+const OSC_APP = "codebuddy";
+/** OSC 7501 decoded-byte limits from the spec (rev 0.3). */
+const OSC_TITLE_MAX_BYTES = 192;
+const OSC_MSG_MAX_BYTES = 2048;
+/** Whole OSC sequence must stay under 4096 bytes. */
+const OSC_SEQ_MAX_BYTES = 4096;
+/** herdr-core terminal id env var (e.g. "t1"). */
+const HC_TERMINAL_ID_ENV = "HC_TERMINAL_ID";
 const MAX_MESSAGE_LEN = 200;
 const MAX_TITLE_LEN = 80;
 const TITLE_TTL_MS = 60 * 60 * 1000;
@@ -390,7 +413,12 @@ function classify(hook) {
             // hooks.json only matches ^AskUserQuestion$ for this event; the tool_name
             // check keeps the reporter correct if it is ever invoked generically.
             if (tool === "AskUserQuestion") {
-                return { kind: "report", state: "blocked", message: "asking the user a question" };
+                return {
+                    kind: "report",
+                    state: "blocked",
+                    blockKind: "question",
+                    message: "asking the user a question",
+                };
             }
             return { kind: "report", state: "working" };
         case "PostToolUse":
@@ -405,6 +433,7 @@ function classify(hook) {
             return {
                 kind: "report",
                 state: "blocked",
+                blockKind: "permission",
                 message: sanitizeText(asString(hook.message) || `permission: ${tool || "tool"}`, MAX_MESSAGE_LEN),
             };
         case "Stop":
@@ -426,6 +455,7 @@ function classify(hook) {
                 return {
                     kind: "report",
                     state: "blocked",
+                    blockKind: /auth/.test(type) ? "auth" : "permission",
                     message: sanitizeText(asString(hook.message), MAX_MESSAGE_LEN) || "needs input",
                 };
             }
@@ -437,6 +467,162 @@ function classify(hook) {
         default:
             return { kind: "none" };
     }
+}
+function detectBackend() {
+    if (process.env.HERDR_ENV === "1" && process.env.HERDR_PANE_ID)
+        return "tui";
+    // herdr-core (the Herdr desktop app) injects HC_* instead of HERDR_*.
+    if (process.env.HC_TERMINAL_SOCKET)
+        return "core";
+    return "none";
+}
+/* ------------------------------------------------------------------ *
+ * OSC 7501 (Program Status Protocol) — herdr-core backend
+ *
+ * herdr-core derives agent status from what the program writes to its own
+ * terminal, not from an RPC. Wire grammar (spec rev 0.3):
+ *
+ *   report = ESC ] 7501 ; body ST        ST = ESC \\  or BEL
+ *   body   = pair *( ":" pair )          pair = key "=" value
+ *   value  = [A-Za-z0-9_.,+/=-]*         (no ":" or ";", so nothing escapes)
+ *
+ * Keys used here: state (required), app, kind (blocked only), title and msg
+ * (standard base64 of UTF-8). A report replaces its record entirely.
+ * ------------------------------------------------------------------ */
+const ESC = "\u001b";
+const ST = ESC + "\\";
+/** base64 of UTF-8, truncated to the spec's decoded-byte limit. */
+function oscB64(text, maxDecodedBytes) {
+    const buf = Buffer.from(text, "utf8");
+    const clipped = buf.length > maxDecodedBytes ? buf.subarray(0, maxDecodedBytes) : buf;
+    return clipped.toString("base64");
+}
+/** Only the spec's value charset is legal; anything else must be dropped. */
+function oscSafeValue(value) {
+    return value.replace(/[^A-Za-z0-9_.,+/=-]/g, "");
+}
+function buildOsc(opts) {
+    const pairs = [`state=${opts.state}`];
+    if (opts.state !== "clear")
+        pairs.push(`app=${oscSafeValue(OSC_APP)}`);
+    if (opts.state === "blocked" && opts.blockKind)
+        pairs.push(`kind=${opts.blockKind}`);
+    if (opts.title)
+        pairs.push(`title=${oscB64(opts.title, OSC_TITLE_MAX_BYTES)}`);
+    if (opts.msg)
+        pairs.push(`msg=${oscB64(opts.msg, OSC_MSG_MAX_BYTES)}`);
+    let seq = `${ESC}]7501;${pairs.join(":")}${ST}`;
+    // Hard spec limit: the whole sequence is at most 4096 bytes. Drop the
+    // optional msg first, then the title, rather than sending an invalid report.
+    if (Buffer.byteLength(seq, "utf8") > OSC_SEQ_MAX_BYTES && opts.msg) {
+        seq = buildOsc({ ...opts, msg: undefined });
+    }
+    if (Buffer.byteLength(seq, "utf8") > OSC_SEQ_MAX_BYTES && opts.title) {
+        seq = buildOsc({ ...opts, title: undefined });
+    }
+    return seq;
+}
+/**
+ * Find the pty that herdr-core actually reads.
+ *
+ * CodeBuddy runs hook commands in a nested pty of its own, so writing to
+ * /dev/tty reaches that inner pty and herdr-core never sees it. Walk the parent
+ * chain and take the outermost controlling terminal — that is the Herdr
+ * terminal's pty. Returns a device path, or undefined when there is none.
+ */
+function findOuterTty() {
+    if (process.platform === "win32")
+        return undefined;
+    try {
+        const out = spawnSync("ps", ["-axo", "pid=,ppid=,tty="], {
+            encoding: "utf8",
+            timeout: CLI_TIMEOUT_MS,
+        });
+        if (out.error || out.status !== 0 || !out.stdout)
+            return undefined;
+        const rows = new Map();
+        for (const line of out.stdout.split("\n")) {
+            const m = line.trim().match(/^(\d+)\s+(\d+)\s+(\S+)/);
+            const [, pidStr, ppidStr, ttyStr] = m ?? [];
+            if (pidStr && ppidStr && ttyStr)
+                rows.set(pidStr, { ppid: ppidStr, tty: ttyStr });
+        }
+        let pid = String(process.pid);
+        let outer;
+        for (let i = 0; i < 16; i++) {
+            const row = rows.get(pid);
+            if (!row)
+                break;
+            // "??" / "-" means no controlling terminal.
+            if (row.tty !== "??" && row.tty !== "-" && row.tty.length > 0) {
+                outer = row.tty.startsWith("/") ? row.tty : `/dev/${row.tty}`;
+            }
+            if (row.ppid === pid || row.ppid === "0" || row.ppid === "1")
+                break;
+            pid = row.ppid;
+        }
+        return outer;
+    }
+    catch {
+        return undefined;
+    }
+}
+function writeTty(device, data) {
+    let fd;
+    try {
+        fd = openSync(device, "w");
+        writeSync(fd, data);
+        return true;
+    }
+    catch {
+        return false;
+    }
+    finally {
+        if (fd !== undefined) {
+            try {
+                closeSync(fd);
+            }
+            catch {
+                /* ignore */
+            }
+        }
+    }
+}
+/* ------------------------------------------------------------------ *
+ * herdr-core backend: emit OSC 7501 to the outer terminal pty
+ *
+ * herdr-core keeps no seq and needs no lock: each report replaces the
+ * terminal's record wholesale, and the terminal drops working/blocked records
+ * on its own when the process exits or a new shell prompt begins. So this
+ * backend is stateless — no state file, no dedup, no heartbeat.
+ * ------------------------------------------------------------------ */
+/**
+ * Emit an OSC sequence. Prefers the outer terminal pty (what herdr-core reads);
+ * falls back to our own stdout. HERDR_PRO_OSC_TO_STDOUT=1 forces stdout, which
+ * keeps tests deterministic and helps when the outer pty cannot be resolved.
+ */
+function emitOsc(seq) {
+    if (process.env.HERDR_PRO_OSC_TO_STDOUT !== "1") {
+        const device = findOuterTty();
+        if (device && writeTty(device, seq))
+            return;
+    }
+    try {
+        process.stdout.write(seq);
+    }
+    catch {
+        /* ignore */
+    }
+}
+function coreReport(decision) {
+    const state = decision.state ?? "idle";
+    // msg is one line of current status; reuse the TUI backend's message.
+    emitOsc(buildOsc({ state, blockKind: decision.blockKind, title: decision.title, msg: decision.message || undefined }));
+}
+function coreRelease() {
+    // "clear" removes this program's record. herdr-core also drops the record
+    // when the process exits, so this is belt-and-braces.
+    emitOsc(buildOsc({ state: "clear" }));
 }
 /* ------------------------------------------------------------------ *
  * Main
@@ -550,15 +736,39 @@ async function release(pane) {
 }
 async function doctor() {
     const pane = process.env.HERDR_PANE_ID ?? "";
+    const backend = detectBackend();
     const info = {
+        backend,
         herdrEnv: process.env.HERDR_ENV ?? "",
         paneId: pane,
         binPath: process.env.HERDR_BIN_PATH ?? "",
         socketPath: process.env.HERDR_SOCKET_PATH ?? "",
-        insideHerdr: process.env.HERDR_ENV === "1" && Boolean(pane),
+        hcTerminalSocket: process.env.HC_TERMINAL_SOCKET ?? "",
+        hcTerminalId: process.env[HC_TERMINAL_ID_ENV] ?? "",
+        outerTty: backend === "core" ? findOuterTty() ?? "" : "",
+        insideHerdr: backend !== "none",
         stateFile: pane ? statePath(pane) : "",
         persistedState: pane ? readState(statePath(pane)) : null,
     };
+    if (backend === "core") {
+        const term = process.env[HC_TERMINAL_ID_ENV];
+        const hc = spawnSync("hc", term ? ["get", term, "--json"] : ["get", "--json"], {
+            encoding: "utf8",
+            timeout: 3000,
+        });
+        if (!hc.error) {
+            try {
+                const d = JSON.parse(hc.stdout);
+                info.coreTerminal = { status: d.status, reported: d.reported, turn: d.turn, title: d.title };
+            }
+            catch {
+                info.coreTerminalRaw = (hc.stdout || hc.stderr || "").trim().slice(0, 2000);
+            }
+        }
+        else {
+            info.coreTerminalError = "hc not on PATH or terminal not found";
+        }
+    }
     if (pane) {
         const bin = process.env.HERDR_BIN_PATH;
         if (bin) {
@@ -583,14 +793,22 @@ async function main() {
         await doctor();
         return;
     }
-    if (process.env.HERDR_ENV !== "1")
-        return;
-    const pane = process.env.HERDR_PANE_ID;
-    if (!pane)
+    const backend = detectBackend();
+    if (backend === "none")
         return;
     const hook = await readHook();
     const decision = classify(hook);
     if (decision.kind === "none")
+        return;
+    if (backend === "core") {
+        if (decision.kind === "release")
+            coreRelease();
+        else
+            coreReport(decision);
+        return;
+    }
+    const pane = process.env.HERDR_PANE_ID;
+    if (!pane)
         return;
     if (decision.kind === "release") {
         await release(pane);

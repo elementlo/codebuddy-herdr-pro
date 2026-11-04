@@ -18,7 +18,24 @@ Herdr 官方内置了 claude、codex、kimi 等智能体的集成，但不认识
 
 实现思路参考 [is/codebuddy-herdr](https://github.com/is/codebuddy-herdr)，但**协议规范对齐 Herdr 官方一方集成（claude / kimi）**——参见 [herdrdev/herdr](https://github.com/herdrdev/herdr) 的 `src/integration/assets/{claude,kimi}/herdr-agent-state.sh` 与 `KIMI_HOOK_EVENTS`。
 
+### 同时支持两个 Herdr 产品
+
+Herdr 有两个形态，状态上报机制完全不同，本插件**自动识别环境并选择对应后端**：
+
+| | herdr TUI（终端复用器） | Herdr 桌面 App（herdr-app + herdr-core） |
+| --- | --- | --- |
+| 识别依据 | `HERDR_ENV=1` + `HERDR_PANE_ID` | `HC_TERMINAL_SOCKET` |
+| 上报通道 | 本地 socket API（`pane.report_agent` 等） | **OSC 7501** 程序状态转义序列写入终端 pty |
+| CLI | `herdr` | `hc` |
+
+桌面 App 的 herdr-core 没有 `report_agent` 这类 RPC——按 [herdr-app `defaults/AGENTS.md`](https://github.com/herdrdev/herdr-app/blob/master/defaults/AGENTS.md)，*“Agents are terminals whose program reports a status (OSC 7501)”*。因此 core 后端把状态编码成 OSC 7501 序列（`state` / `app` / `kind` / `title` / `msg`）写到终端。两个后端都不在时，插件完全 no-op。
+
 ## 特性
+
+### 双后端自动适配
+- **herdr TUI**：socket API 分层上报（见下）。
+- **Herdr 桌面 App / herdr-core**：OSC 7501 程序状态协议。reporter 会向上遍历进程链找到**最外层 pty**（CodeBuddy 的 hook 跑在嵌套 pty 里，直接写 `/dev/tty` 到不了 herdr-core），把转义序列写进去。
+- 环境识别、状态映射、去重/心跳策略对两个后端一致；core 后端无状态（herdr-core 自己按记录覆盖，进程退出自动清除）。
 
 ### 对齐官方协议规范
 - **会话身份与生命周期状态分离**：和官方 claude/kimi 集成一样，用 `pane.report_agent_session` 上报会话身份（`agent_session_id` / `agent_session_path` / `session_start_source` / `resume_argv`），用 `pane.report_agent` 上报状态，而不是把两者混在一个请求里。
@@ -87,7 +104,7 @@ bash script/install-dev.sh
 ### 环境要求
 
 - 支持插件的 CodeBuddy Code（hooks 需 v1.16.0+）
-- Herdr 0.9+ 运行该窗格（resume 命令需 0.9.2+；旧版会忽略 resume，状态上报照常工作）
+- **herdr TUI** 0.9+ 运行该窗格（resume 命令需 0.9.2+；旧版会忽略 resume，状态上报照常工作），**或 Herdr 桌面 App**（herdr-app + herdr-core，走 OSC 7501）
 - Node.js 18+（运行时**零 npm 依赖，不需要 flock**；TypeScript 仅从源码构建时需要）
 
 ## 使用
@@ -141,7 +158,8 @@ herdr --session codebuddy-test      # 窗格应自动执行 resume 命令并重�
   - `pane.report_metadata` — 侧边栏标题等**纯展示**字段（带 TTL），不夺取状态权威
   - `pane.release_agent` — 退出释放
 - 每窗格一个状态文件（`$TMPDIR/herdr-codebuddy-pro-<pane>.json`）持久化 seq / 状态 / 会话 ID，保证跨进程 seq 严格递增（Herdr 会忽略 seq 不大于上次已接受值的上报）。seq 用纳秒时间戳，与官方 kimi 集成的 `time.time_ns()` 同思路。
-- 非 Herdr 环境（`HERDR_ENV != 1`）完全 no-op。
+- **herdr-core 后端**：检测到 `HC_TERMINAL_SOCKET` 时，把状态编码为 OSC 7501 序列（`ESC ] 7501 ; state=<idle|working|blocked|clear>[:app=codebuddy][:kind=permission|question|auth][:title=<b64>][:msg=<b64>] ESC \`）写入最外层终端 pty。herdr-core 从终端输出流解析，无需 socket/seq/锁。
+- 两个后端都不在（`HERDR_ENV != 1` 且无 `HC_TERMINAL_SOCKET`）时完全 no-op。
 
 ## 文件结构
 
